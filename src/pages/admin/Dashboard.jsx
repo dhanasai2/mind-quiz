@@ -423,7 +423,9 @@ function CreateEventPanel({ onEventCreated }) {
 function EventControlPanel({ event, onEventUpdate }) {
   const [participants, setParticipants] = useState([])
   const [questions, setQuestions] = useState([])
-  const [currentQIndex, setCurrentQIndex] = useState(-1)
+  const [currentQIndex, _setCurrentQIndex] = useState(-1)
+  const currentQIndexRef = useRef(-1)
+  const setCurrentQIndex = (val) => { currentQIndexRef.current = val; _setCurrentQIndex(val) }
   const [answers, setAnswers] = useState([])
   const [loading, setLoading] = useState(true)
   const adminChannelRef = useRef(null)
@@ -453,7 +455,8 @@ function EventControlPanel({ event, onEventUpdate }) {
   const fetchData = async () => {
     isFetchingRef.current = true
     setLoading(prev => participants.length === 0 ? true : prev) // only show loading spinner on first load
-    const [{ data: parts }, { data: qs }, { data: ans }] = await Promise.all([
+    const [{ data: freshEvent }, { data: parts }, { data: qs }, { data: ans }] = await Promise.all([
+      supabase.from('events').select('*').eq('id', event.id).single(),
       supabase.from('participants').select('*').eq('event_id', event.id).order('score', { ascending: false }),
       supabase.from('questions').select('*').eq('event_id', event.id).order('order_index'),
       supabase.from('answers').select('*').eq('event_id', event.id),
@@ -462,7 +465,11 @@ function EventControlPanel({ event, onEventUpdate }) {
     setParticipants((parts || []).map(p => ({ ...p, score: Number(p.score) || 0 })))
     setQuestions(qs || [])
     setAnswers((ans || []).map(a => ({ ...a, score: Number(a.score) || 0 })))
-    setCurrentQIndex(event.current_question_index ?? -1)
+    // Read current_question_index from DB (not stale prop) to prevent resets
+    const dbIndex = freshEvent?.current_question_index ?? event.current_question_index ?? -1
+    setCurrentQIndex(dbIndex)
+    // Keep parent event in sync with DB
+    if (freshEvent) onEventUpdate(freshEvent)
     setLoading(false)
     isFetchingRef.current = false
   }
@@ -539,7 +546,7 @@ function EventControlPanel({ event, onEventUpdate }) {
   }
 
   const handleNextQuestion = async () => {
-    const nextIdx = currentQIndex + 1
+    const nextIdx = currentQIndexRef.current + 1
     if (nextIdx >= questions.length) {
       return handleEndEvent()
     }
@@ -553,13 +560,14 @@ function EventControlPanel({ event, onEventUpdate }) {
   }
 
   const handleSendQuestionNow = async () => {
-    const nextIdx = currentQIndex + 1
+    const nextIdx = currentQIndexRef.current + 1
     if (nextIdx >= questions.length) {
       return handleEndEvent()
     }
     // Reveal the question immediately (clears countdown on player side)
     await supabase.from('events').update({ current_question_index: nextIdx }).eq('id', event.id)
     setCurrentQIndex(nextIdx)
+    onEventUpdate({ ...event, current_question_index: nextIdx })
     await broadcastToEvent('question_reveal', { questionIndex: nextIdx })
     toast.success(`Question ${nextIdx + 1} revealed!`)
   }
