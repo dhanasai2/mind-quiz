@@ -1,0 +1,246 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  body {
+    background-color: #0a0a0f;
+    color: #e0e0ff;
+    font-family: 'Inter', sans-serif;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #0a0a0f;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, #7c3aed, #00f5ff);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, #8b5cf6, #00f5ff);
+  }
+
+  ::selection {
+    background: rgba(124, 58, 237, 0.4);
+    color: #fff;
+  }
+}
+
+@layer components {
+  .glass {
+    background: rgba(30, 30, 46, 0.6);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(124, 58, 237, 0.15);
+  }
+
+  .glass-strong {
+    background: rgba(30, 30, 46, 0.85);
+    backdrop-filter: blur(30px);
+    -webkit-backdrop-filter: blur(30px);
+    border: 1px solid rgba(124, 58, 237, 0.25);
+  }
+
+  .neon-border {
+    border: 1px solid rgba(124, 58, 237, 0.4);
+    box-shadow: 0 0 15px rgba(124, 58, 237, 0.15),
+                inset 0 0 15px rgba(124, 58, 237, 0.05);
+  }
+
+  .neon-glow {
+    box-shadow: 0 0 20px rgba(124, 58, 237, 0.4),
+                0 0 60px rgba(124, 58, 237, 0.15),
+                0 0 100px rgba(124, 58, 237, 0.05);
+  }
+
+  .neon-text {
+    text-shadow: 0 0 10px rgba(124, 58, 237, 0.6),
+                 0 0 40px rgba(124, 58, 237, 0.3);
+  }
+
+  .cyan-glow {
+    box-shadow: 0 0 20px rgba(0, 245, 255, 0.3),
+                0 0 60px rgba(0, 245, 255, 0.1);
+  }
+
+  .btn-primary {
+    @apply relative px-8 py-3 bg-gradient-to-r from-matrix-600 to-matrix-500 text-white font-semibold rounded-xl
+           transition-all duration-300 ease-out
+           hover:from-matrix-500 hover:to-matrix-400 hover:shadow-lg hover:shadow-matrix-500/25
+           active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply relative px-8 py-3 bg-transparent text-matrix-300 font-semibold rounded-xl
+           border border-matrix-500/40 transition-all duration-300
+           hover:bg-matrix-500/10 hover:border-matrix-400/60 hover:text-white
+           active:scale-95;
+  }
+
+  .btn-danger {
+    @apply relative px-6 py-2 bg-gradient-to-r from-red-600 to-red-500 text-white font-semibold rounded-xl
+           transition-all duration-300 hover:from-red-500 hover:to-red-400
+           active:scale-95;
+  }
+
+  .btn-success {
+    @apply relative px-6 py-2 bg-gradient-to-r from-emerald-600 to-emerald-500 text-white font-semibold rounded-xl
+           transition-all duration-300 hover:from-emerald-500 hover:to-emerald-400
+           active:scale-95;
+  }
+
+  .input-field {
+    @apply w-full px-4 py-3 bg-dark-200 border border-matrix-500/20 rounded-xl text-white
+           placeholder:text-gray-500 transition-all duration-300
+           focus:outline-none focus:border-matrix-500/60 focus:ring-2 focus:ring-matrix-500/20
+           hover:border-matrix-500/40;
+  }
+
+  .card {
+    @apply glass rounded-2xl p-6 transition-all duration-300 hover:border-matrix-500/30;
+  }
+
+  .matrix-bg {
+    background:
+      radial-gradient(ellipse at 20% 50%, rgba(124, 58, 237, 0.08) 0%, transparent 50%),
+      radial-gradient(ellipse at 80% 20%, rgba(0, 245, 255, 0.05) 0%, transparent 50%),
+      radial-gradient(ellipse at 50% 80%, rgba(191, 0, 255, 0.05) 0%, transparent 50%),
+      linear-gradient(rgba(124, 58, 237, 0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(124, 58, 237, 0.03) 1px, transparent 1px),
+      #0a0a0f;
+    background-size: 100%, 100%, 100%, 40px 40px, 40px 40px, 100%;
+  }
+
+  .option-btn {
+    @apply w-full p-4 glass rounded-xl text-left transition-all duration-200
+           hover:bg-matrix-500/15 hover:border-matrix-400/50 cursor-pointer
+           active:scale-[0.98];
+  }
+
+  .option-btn.selected {
+    @apply bg-matrix-500/20 border-matrix-400/60;
+  }
+
+  .option-btn.correct {
+    @apply bg-emerald-500/20 border-emerald-400/60;
+  }
+
+  .option-btn.incorrect {
+    @apply bg-red-500/20 border-red-400/60;
+  }
+
+  .leaderboard-row {
+    @apply flex items-center gap-4 p-3 glass rounded-xl transition-all duration-500;
+  }
+
+  .rank-badge {
+    @apply w-10 h-10 flex items-center justify-center rounded-full font-display font-bold text-sm;
+  }
+
+  .shimmer-bg {
+    background: linear-gradient(90deg, transparent 0%, rgba(124, 58, 237, 0.08) 50%, transparent 100%);
+    background-size: 200% 100%;
+    animation: shimmer 2s linear infinite;
+  }
+}
+
+@layer utilities {
+  .text-gradient {
+    @apply bg-clip-text text-transparent bg-gradient-to-r from-matrix-400 via-neon-cyan to-matrix-300;
+  }
+
+  .text-gradient-warm {
+    @apply bg-clip-text text-transparent bg-gradient-to-r from-neon-pink via-matrix-400 to-neon-purple;
+  }
+}
+
+/* ===== ENHANCED KEYFRAME ANIMATIONS ===== */
+
+@keyframes matrixRain {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* Neural pulse effect for interactive elements */
+@keyframes neuralPulse {
+  0%, 100% {
+    box-shadow: 0 0 5px rgba(124, 58, 237, 0.3),
+                0 0 15px rgba(124, 58, 237, 0.1);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(124, 58, 237, 0.5),
+                0 0 50px rgba(124, 58, 237, 0.2),
+                0 0 80px rgba(124, 58, 237, 0.05);
+  }
+}
+
+/* Breathing glow for ambient elements */
+@keyframes breatheGlow {
+  0%, 100% { opacity: 0.3; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(1.05); }
+}
+
+/* Electric arc shimmer */
+@keyframes electricArc {
+  0% { opacity: 0; transform: scaleX(0) translateY(0); }
+  10% { opacity: 1; transform: scaleX(1) translateY(-2px); }
+  20% { opacity: 0.5; transform: scaleX(0.8) translateY(1px); }
+  30% { opacity: 1; transform: scaleX(1) translateY(-1px); }
+  40%, 100% { opacity: 0; transform: scaleX(0); }
+}
+
+/* Smooth rotation for hex patterns */
+@keyframes hexRotate {
+  0% { transform: rotate(0deg) scale(1); }
+  50% { transform: rotate(180deg) scale(1.05); }
+  100% { transform: rotate(360deg) scale(1); }
+}
+
+/* Synaptic flash */
+@keyframes synapticFlash {
+  0%, 100% { opacity: 0; }
+  50% { opacity: 0.8; }
+}
+
+/* Waveform animation */
+@keyframes waveform {
+  0%, 100% { height: 4px; }
+  50% { height: 20px; }
+}
+
+/* Floating animation */
+@keyframes float {
+  0%, 100% { transform: translateY(0px) rotate(0deg); }
+  25% { transform: translateY(-15px) rotate(2deg); }
+  50% { transform: translateY(-25px) rotate(0deg); }
+  75% { transform: translateY(-10px) rotate(-2deg); }
+}
+
+/* Cyber scan line */
+@keyframes scanLine {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
+}
+
+/* Particle orbit */
+@keyframes orbit {
+  0% { transform: rotate(0deg) translateX(30px) rotate(0deg); }
+  100% { transform: rotate(360deg) translateX(30px) rotate(-360deg); }
+}
