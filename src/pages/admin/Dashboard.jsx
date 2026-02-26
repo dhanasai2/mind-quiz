@@ -843,10 +843,15 @@ export default function Dashboard() {
       ({ data, error }) => {
         if (error) {
           console.error('Error fetching events:', error)
+          setLoading(false)
           return
         }
-        // Sort by created_at descending
-        const sorted = data?.sort((a, b) => (b.created_at?.getTime?.() || 0) - (a.created_at?.getTime?.() || 0)) || []
+        // Sort by created_at descending (newest first)
+        const sorted = data?.sort((a, b) => {
+          const timeA = a.created_at instanceof Date ? a.created_at.getTime() : 0
+          const timeB = b.created_at instanceof Date ? b.created_at.getTime() : 0
+          return timeB - timeA
+        }) || []
         setEvents(sorted)
         setLoading(false)
       }

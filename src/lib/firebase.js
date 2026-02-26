@@ -32,6 +32,28 @@ const app = initializeApp(firebaseConfig)
 export const db = getFirestore(app)
 
 /**
+ * Utility: Convert Firestore Timestamps to JavaScript Dates
+ */
+function convertTimestamps(data) {
+  if (Array.isArray(data)) {
+    return data.map(item => convertTimestamps(item))
+  }
+  if (data && typeof data === 'object') {
+    const converted = { ...data }
+    for (const key in converted) {
+      if (converted[key]?.toDate) {
+        // It's a Firestore Timestamp
+        converted[key] = converted[key].toDate()
+      } else if (typeof converted[key] === 'object') {
+        converted[key] = convertTimestamps(converted[key])
+      }
+    }
+    return converted
+  }
+  return data
+}
+
+/**
  * Firebase Database Wrapper — mimics Supabase API for easier migration
  */
 export class FirebaseDatabase {
@@ -63,7 +85,7 @@ export class FirebaseDatabase {
     const docRef = doc(this.db, collectionName, docId)
     return onSnapshot(docRef, (snapshot) => {
       if (snapshot.exists()) {
-        callback({ data: { id: snapshot.id, ...snapshot.data() }, error: null })
+        callback({ data: { id: snapshot.id, ...convertTimestamps(snapshot.data()) }, error: null })
       } else {
         callback({ data: null, error: { message: 'Document not found' } })
       }
@@ -82,11 +104,19 @@ export class FirebaseDatabase {
     }
     const q = query(collection(this.db, collectionName), ...constraints)
     return onSnapshot(q, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-      }))
-      callback({ data, error: null })
+      try {
+        const data = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...convertTimestamps(doc.data()),
+        }))
+        callback({ data, error: null })
+      } catch (error) {
+        console.error(`Error in onQueryChange for ${collectionName}:`, error)
+        callback({ data: null, error })
+      }
+    }, (error) => {
+      console.error(`Listener error for ${collectionName}:`, error)
+      callback({ data: null, error })
     })
   }
 
@@ -246,7 +276,7 @@ class FirebaseQueryBuilder {
       })
 
       const updatedDoc = await getDoc(docRef)
-      return { data: { id: updatedDoc.id, ...updatedDoc.data() }, error: null }
+      return { data: { id: updatedDoc.id, ...convertTimestamps(updatedDoc.data()) }, error: null }
     } catch (error) {
       return { data: null, error }
     }
@@ -301,7 +331,7 @@ class FirebaseQueryBuilder {
       const snapshot = await getDocs(q)
       let data = snapshot.docs.map(doc => ({
         id: doc.id,
-        ...doc.data(),
+        ...convertTimestamps(doc.data()),
       }))
 
       if (this.singleResult) {
