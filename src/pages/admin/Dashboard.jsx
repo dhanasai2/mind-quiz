@@ -475,23 +475,23 @@ function EventControlPanel({ event, onEventUpdate }) {
   }
 
   const setupRealtimeSubscription = () => {
-    if (adminChannelRef.current) supabase.removeChannel(adminChannelRef.current)
-    const channel = supabase.channel(`admin-${event.id}`)
+    // Clean up old listeners
+    if (adminChannelRef.current) {
+      if (typeof adminChannelRef.current === 'function') {
+        adminChannelRef.current() // unsubscribe
+      } else {
+        supabase.removeChannel(adminChannelRef.current)
+      }
+    }
 
-    channel.on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: 'participants', filter: `event_id=eq.${event.id}` },
+    // Set up Firebase real-time listener for participants and answers changes
+    const unsubscribe = supabase.onQueryChange(
+      'participants',
+      [{ field: 'event_id', operator: '==', value: event.id }],
       () => debouncedFetch()
     )
 
-    channel.on(
-      'postgres_changes',
-      { event: 'INSERT', schema: 'public', table: 'answers', filter: `event_id=eq.${event.id}` },
-      () => debouncedFetch()
-    )
-
-    channel.subscribe()
-    adminChannelRef.current = channel
+    adminChannelRef.current = unsubscribe
   }
 
   // Persistent broadcast channel — reused for ALL broadcasts to players
@@ -836,7 +836,25 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    fetchEvents()
+    // Set up real-time listener for events
+    const unsubscribe = supabase.onQueryChange(
+      'events',
+      [],
+      ({ data, error }) => {
+        if (error) {
+          console.error('Error fetching events:', error)
+          return
+        }
+        // Sort by created_at descending
+        const sorted = data?.sort((a, b) => (b.created_at?.getTime?.() || 0) - (a.created_at?.getTime?.() || 0)) || []
+        setEvents(sorted)
+        setLoading(false)
+      }
+    )
+
+    return () => {
+      if (unsubscribe) unsubscribe()
+    }
   }, [])
 
   const fetchEvents = async () => {

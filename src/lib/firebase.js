@@ -14,6 +14,7 @@ import {
   writeBatch,
   getDoc,
   increment,
+  onSnapshot,
 } from 'firebase/firestore'
 
 // Firebase config from environment variables
@@ -53,6 +54,40 @@ export class FirebaseDatabase {
       on: () => this,
       subscribe: async () => 'ok',
     }
+  }
+
+  /**
+   * Real-time listener for documents
+   */
+  onDocumentChange(collectionName, docId, callback) {
+    const docRef = doc(this.db, collectionName, docId)
+    return onSnapshot(docRef, (snapshot) => {
+      if (snapshot.exists()) {
+        callback({ data: { id: snapshot.id, ...snapshot.data() }, error: null })
+      } else {
+        callback({ data: null, error: { message: 'Document not found' } })
+      }
+    })
+  }
+
+  /**
+   * Real-time listener for query results
+   */
+  onQueryChange(collectionName, filters, callback) {
+    const constraints = []
+    if (filters) {
+      for (const filter of filters) {
+        constraints.push(where(filter.field, filter.operator, filter.value))
+      }
+    }
+    const q = query(collection(this.db, collectionName), ...constraints)
+    return onSnapshot(q, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data(),
+      }))
+      callback({ data, error: null })
+    })
   }
 
   /**
@@ -222,11 +257,32 @@ class FirebaseQueryBuilder {
    */
   async delete() {
     try {
-      const id = this.filters.find(f => f.field === 'id')?.value
-      if (!id) throw new Error('Delete requires id filter')
+      // Check if deleting by ID (direct doc deletion)
+      const idFilter = this.filters.find(f => f.field === 'id')
+      if (idFilter) {
+        await deleteDoc(doc(this.db, this.collectionName, idFilter.value))
+        return { data: { id: idFilter.value }, error: null }
+      }
 
-      await deleteDoc(doc(this.db, this.collectionName, id))
-      return { data: { id }, error: null }
+      // Delete with query filters (multiple documents)
+      if (this.filters.length === 0) {
+        throw new Error('Delete requires at least one filter')
+      }
+
+      const q = query(
+        collection(this.db, this.collectionName),
+        ...this.buildQueryConstraints()
+      )
+
+      const snapshot = await getDocs(q)
+      const batch = writeBatch(this.db)
+
+      snapshot.docs.forEach(doc => {
+        batch.delete(doc.ref)
+      })
+
+      await batch.commit()
+      return { data: { count: snapshot.docs.length }, error: null }
     } catch (error) {
       return { data: null, error }
     }
