@@ -127,6 +127,7 @@ function CreateEventPanel({ onEventCreated }) {
         )
         if (error) throw new Error(error.message || 'Failed to insert event')
         if (!data) throw new Error('No data returned from event insert')
+        console.log('[CreateEventPanel] Event created:', { id: data.id, name: data.name, code: data.code })
         return data
       })
 
@@ -141,16 +142,23 @@ function CreateEventPanel({ onEventCreated }) {
         order_index: idx,
       }))
 
+      console.log(`[CreateEventPanel] Inserting ${questionsToInsert.length} questions for event ${event.id}`)
+
       const batchSize = 5
       for (let i = 0; i < questionsToInsert.length; i += batchSize) {
         const batch = questionsToInsert.slice(i, i + batchSize)
+        console.log(`[CreateEventPanel] Inserting batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(questionsToInsert.length / batchSize)} (${batch.length} questions)`)
         await retryFetch(async () => {
           const { error } = await withTimeout(
             supabase.from('questions').insert(batch),
             15000,
             `Question batch ${Math.floor(i / batchSize) + 1}`
           )
-          if (error) throw new Error(error.message || 'Failed to insert questions')
+          if (error) {
+            console.error(`[CreateEventPanel] Error inserting batch ${Math.floor(i / batchSize) + 1}:`, error)
+            throw new Error(error.message || 'Failed to insert questions')
+          }
+          console.log(`[CreateEventPanel] Batch ${Math.floor(i / batchSize) + 1} inserted successfully`)
         })
       }
 
@@ -429,17 +437,17 @@ function EventControlPanel({ event, onEventUpdate }) {
   const [answers, setAnswers] = useState([])
   const [loading, setLoading] = useState(true)
   const adminChannelRef = useRef(null)
-  const broadcastChannelRef = useRef(null)
   const fetchTimerRef = useRef(null)
   const isFetchingRef = useRef(false)
 
   useEffect(() => {
     fetchData()
     setupRealtimeSubscription()
-    setupBroadcastChannel()
     return () => {
-      if (adminChannelRef.current) supabase.removeChannel(adminChannelRef.current)
-      if (broadcastChannelRef.current) supabase.removeChannel(broadcastChannelRef.current)
+      // Clean up Firebase unsubscribe function
+      if (adminChannelRef.current && typeof adminChannelRef.current === 'function') {
+        adminChannelRef.current()
+      }
       if (fetchTimerRef.current) clearTimeout(fetchTimerRef.current)
     }
   }, [event.id])
@@ -454,74 +462,70 @@ function EventControlPanel({ event, onEventUpdate }) {
 
   const fetchData = async () => {
     isFetchingRef.current = true
-    setLoading(prev => participants.length === 0 ? true : prev) // only show loading spinner on first load
-    const [{ data: freshEvent }, { data: parts }, { data: qs }, { data: ans }] = await Promise.all([
-      supabase.from('events').select('*').eq('id', event.id).single(),
-      supabase.from('participants').select('*').eq('event_id', event.id).order('score', { ascending: false }),
-      supabase.from('questions').select('*').eq('event_id', event.id).order('order_index'),
-      supabase.from('answers').select('*').eq('event_id', event.id),
-    ])
-    // NUMERIC columns come as strings from Supabase — parse to numbers
-    setParticipants((parts || []).map(p => ({ ...p, score: Number(p.score) || 0 })))
-    setQuestions(qs || [])
-    setAnswers((ans || []).map(a => ({ ...a, score: Number(a.score) || 0 })))
-    // Read current_question_index from DB (not stale prop) to prevent resets
-    const dbIndex = freshEvent?.current_question_index ?? event.current_question_index ?? -1
-    setCurrentQIndex(dbIndex)
-    // Keep parent event in sync with DB
-    if (freshEvent) onEventUpdate(freshEvent)
+    setLoading(prev => participants.length === 0 ? true : prev)
+    try {
+      const [{ data: freshEvent }, { data: parts }, { data: qs }, { data: ans }] = await Promise.all([
+        supabase.from('events').select('*').eq('id', event.id).single(),
+        supabase.from('participants').select('*').eq('event_id', event.id).order('score', { ascending: false }),
+        supabase.from('questions').select('*').eq('event_id', event.id).order('order_index'),
+        supabase.from('answers').select('*').eq('event_id', event.id),
+      ])
+      
+      console.log(`[EventControlPanel] Fetched data for event ${event.id}:`, {
+        event: freshEvent,
+        participantCount: parts?.length || 0,
+        questionCount: qs?.length || 0,
+        answerCount: ans?.length || 0,
+      })
+
+      setParticipants((parts || []).map(p => ({ ...p, score: Number(p.score) || 0 })))
+      setQuestions(qs || [])
+      setAnswers((ans || []).map(a => ({ ...a, score: Number(a.score) || 0 })))
+      const dbIndex = freshEvent?.current_question_index ?? event.current_question_index ?? -1
+      setCurrentQIndex(dbIndex)
+      if (freshEvent) onEventUpdate(freshEvent)
+    } catch (error) {
+      console.error('[EventControlPanel] Error fetching data:', error)
+    }
     setLoading(false)
     isFetchingRef.current = false
   }
 
   const setupRealtimeSubscription = () => {
+    console.log(`[EventControlPanel] Setting up real-time listener for event ${event.id}`)
+    
     // Clean up old listeners
     if (adminChannelRef.current) {
       if (typeof adminChannelRef.current === 'function') {
-        adminChannelRef.current() // unsubscribe
-      } else {
-        supabase.removeChannel(adminChannelRef.current)
+        console.log(`[EventControlPanel] Unsubscribing from previous listener`)
+        adminChannelRef.current()
       }
     }
 
-    // Set up Firebase real-time listener for participants and answers changes
+    // Set up Firebase real-time listener for participants changes
     const unsubscribe = supabase.onQueryChange(
       'participants',
       [{ field: 'event_id', operator: '==', value: event.id }],
-      () => debouncedFetch()
+      ({ data, error }) => {
+        if (error) {
+          console.error(`[EventControlPanel] Real-time listener error:`, error)
+          return
+        }
+        console.log(`[EventControlPanel] Real-time update: ${data?.length || 0} participants`)
+        debouncedFetch()
+      }
     )
 
     adminChannelRef.current = unsubscribe
+    console.log(`[EventControlPanel] Real-time listener set up successfully`)
   }
 
-  // Persistent broadcast channel — reused for ALL broadcasts to players
-  const setupBroadcastChannel = () => {
-    if (broadcastChannelRef.current) supabase.removeChannel(broadcastChannelRef.current)
-    const channel = supabase.channel(`event-${event.id}`, {
-      config: { broadcast: { self: false } },
-    })
-    channel.subscribe((status) => {
-      if (status === 'SUBSCRIBED') {
-        console.log('[Admin] Broadcast channel ready for event', event.id)
-      }
-    })
-    broadcastChannelRef.current = channel
-  }
-
+  // Broadcast channels not supported in Firebase; broadcast operations are no-ops for now
   const broadcastToEvent = async (eventType, payload) => {
-    const channel = broadcastChannelRef.current
-    if (!channel) {
-      console.error('[Admin] Broadcast channel not ready')
-      return
-    }
-    // Retry up to 3 times for reliability under load
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const result = await channel.send({ type: 'broadcast', event: eventType, payload })
-      if (result === 'ok') return
-      console.warn(`[Admin] Broadcast attempt ${attempt + 1} failed for ${eventType}, retrying...`)
-      await new Promise(r => setTimeout(r, 200 * (attempt + 1)))
-    }
-    console.error(`[Admin] Failed to broadcast ${eventType} after 3 attempts`)
+    console.log(`[Broadcast] Event: ${eventType}`, payload)
+    // Firebase doesn't have broadcast channels like Supabase
+    // For now, real-time listeners handle updates automatically
+    // In a production app, you'd use Cloud Functions or a separate messaging service
   }
 
   const handleStartEvent = async () => {
