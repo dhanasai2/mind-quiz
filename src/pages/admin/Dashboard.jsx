@@ -147,20 +147,32 @@ function CreateEventPanel({ onEventCreated }) {
       const batchSize = 5
       for (let i = 0; i < questionsToInsert.length; i += batchSize) {
         const batch = questionsToInsert.slice(i, i + batchSize)
-        console.log(`[CreateEventPanel] Inserting batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(questionsToInsert.length / batchSize)} (${batch.length} questions)`)
-        await retryFetch(async () => {
-          const { error } = await withTimeout(
+        const batchNum = Math.floor(i / batchSize) + 1
+        console.log(`[CreateEventPanel] Inserting batch ${batchNum}/${Math.ceil(questionsToInsert.length / batchSize)} (${batch.length} questions)`)
+        
+        try {
+          const { data: insertedData, error } = await withTimeout(
             supabase.from('questions').insert(batch),
             15000,
-            `Question batch ${Math.floor(i / batchSize) + 1}`
+            `Question batch ${batchNum}`
           )
+          
           if (error) {
-            console.error(`[CreateEventPanel] Error inserting batch ${Math.floor(i / batchSize) + 1}:`, error)
-            throw new Error(error.message || 'Failed to insert questions')
+            console.error(`[CreateEventPanel] Error inserting batch ${batchNum}:`, error)
+            throw new Error(`${error.message || 'Failed to insert questions'} (batch ${batchNum})`)
           }
-          console.log(`[CreateEventPanel] Batch ${Math.floor(i / batchSize) + 1} inserted successfully`)
-        })
+          
+          console.log(`[CreateEventPanel] Batch ${batchNum} inserted successfully`, {
+            insertedCount: batch.length,
+            insertedData
+          })
+        } catch (batchError) {
+          console.error(`[CreateEventPanel] Batch ${batchNum} failed:`, batchError.message)
+          throw batchError
+        }
       }
+
+      console.log(`[CreateEventPanel] All ${questionsToInsert.length} questions inserted successfully`)
 
       toast.success('Event created!', { id: 'create-event' })
       onEventCreated(event)
@@ -437,16 +449,20 @@ function EventControlPanel({ event, onEventUpdate }) {
   const [answers, setAnswers] = useState([])
   const [loading, setLoading] = useState(true)
   const adminChannelRef = useRef(null)
+  const broadcastChannelRef = useRef(null)
   const fetchTimerRef = useRef(null)
   const isFetchingRef = useRef(false)
 
   useEffect(() => {
     fetchData()
     setupRealtimeSubscription()
+    setupBroadcastChannel()
     return () => {
-      // Clean up Firebase unsubscribe function
       if (adminChannelRef.current && typeof adminChannelRef.current === 'function') {
         adminChannelRef.current()
+      }
+      if (broadcastChannelRef.current) {
+        supabase.removeChannel(broadcastChannelRef.current)
       }
       if (fetchTimerRef.current) clearTimeout(fetchTimerRef.current)
     }
@@ -520,12 +536,31 @@ function EventControlPanel({ event, onEventUpdate }) {
     console.log(`[EventControlPanel] Real-time listener set up successfully`)
   }
 
-  // Broadcast channels not supported in Firebase; broadcast operations are no-ops for now
+  // Broadcast channel for sending events to players (uses Firestore doc under the hood)
+  const setupBroadcastChannel = () => {
+    if (broadcastChannelRef.current) supabase.removeChannel(broadcastChannelRef.current)
+    const channel = supabase.channel(`event-${event.id}`)
+    channel.subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        console.log('[Admin] Broadcast channel ready for event', event.id)
+      }
+    })
+    broadcastChannelRef.current = channel
+  }
+
   const broadcastToEvent = async (eventType, payload) => {
-    console.log(`[Broadcast] Event: ${eventType}`, payload)
-    // Firebase doesn't have broadcast channels like Supabase
-    // For now, real-time listeners handle updates automatically
-    // In a production app, you'd use Cloud Functions or a separate messaging service
+    const channel = broadcastChannelRef.current
+    if (!channel) {
+      console.error('[Admin] Broadcast channel not ready')
+      return
+    }
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const result = await channel.send({ type: 'broadcast', event: eventType, payload })
+      if (result === 'ok') return
+      console.warn(`[Admin] Broadcast attempt ${attempt + 1} failed for ${eventType}, retrying...`)
+      await new Promise(r => setTimeout(r, 200 * (attempt + 1)))
+    }
+    console.error(`[Admin] Failed to broadcast ${eventType} after 3 attempts`)
   }
 
   const handleStartEvent = async () => {

@@ -4,8 +4,6 @@ import {
   collection,
   query,
   where,
-  orderBy,
-  limit,
   getDocs,
   addDoc,
   updateDoc,
@@ -13,6 +11,7 @@ import {
   doc,
   writeBatch,
   getDoc,
+  setDoc,
   increment,
   onSnapshot,
 } from 'firebase/firestore'
@@ -32,109 +31,101 @@ const app = initializeApp(firebaseConfig)
 export const db = getFirestore(app)
 
 /**
- * Utility: Convert Firestore Timestamps to JavaScript Dates
+ * Convert Firestore Timestamps to JS Dates recursively.
  */
-function convertTimestamps(data) {
-  if (Array.isArray(data)) {
-    return data.map(item => convertTimestamps(item))
+function convertTimestamps(obj) {
+  if (obj == null) return obj
+  if (Array.isArray(obj)) return obj.map(convertTimestamps)
+  if (typeof obj !== 'object') return obj
+  if (typeof obj.toDate === 'function') return obj.toDate()
+  const out = {}
+  for (const k of Object.keys(obj)) {
+    out[k] = convertTimestamps(obj[k])
   }
-  if (data && typeof data === 'object') {
-    const converted = { ...data }
-    for (const key in converted) {
-      if (converted[key]?.toDate) {
-        // It's a Firestore Timestamp
-        converted[key] = converted[key].toDate()
-      } else if (typeof converted[key] === 'object') {
-        converted[key] = convertTimestamps(converted[key])
-      }
-    }
-    return converted
-  }
-  return data
+  return out
 }
 
-/**
- * Firebase Database Wrapper — mimics Supabase API for easier migration
- */
+/** Sort helper */
+function sortBy(arr, field, direction = 'asc') {
+  return [...arr].sort((a, b) => {
+    const va = a[field] ?? 0
+    const vb = b[field] ?? 0
+    if (va < vb) return direction === 'asc' ? -1 : 1
+    if (va > vb) return direction === 'asc' ? 1 : -1
+    return 0
+  })
+}
+
+// ─── Firebase Database Wrapper (Supabase-compatible API) ─────
 export class FirebaseDatabase {
   constructor() {
     this.db = db
   }
 
-  /**
-   * Table reference - returns query builder
-   */
   from(collectionName) {
     return new FirebaseQueryBuilder(this.db, collectionName)
   }
 
   /**
-   * Real-time channel subscription (stub - use real-time listeners for updates)
+   * Channel — implements Supabase-style broadcast via Firestore document.
+   * Admin writes to "broadcasts/{channelName}", players listen via onSnapshot.
    */
-  channel(channelName) {
-    return {
-      on: () => this,
-      subscribe: async () => 'ok',
+  channel(channelName, _opts) {
+    return new FirebaseBroadcastChannel(this.db, channelName)
+  }
+
+  removeChannel(channel) {
+    if (channel && typeof channel.unsubscribe === 'function') {
+      channel.unsubscribe()
     }
   }
 
   /**
-   * Real-time listener for documents
-   */
-  onDocumentChange(collectionName, docId, callback) {
-    const docRef = doc(this.db, collectionName, docId)
-    return onSnapshot(docRef, (snapshot) => {
-      if (snapshot.exists()) {
-        callback({ data: { id: snapshot.id, ...convertTimestamps(snapshot.data()) }, error: null })
-      } else {
-        callback({ data: null, error: { message: 'Document not found' } })
-      }
-    })
-  }
-
-  /**
-   * Real-time listener for query results
+   * Real-time listener for a Firestore query.
+   * Returns an unsubscribe function.
    */
   onQueryChange(collectionName, filters, callback) {
-    const constraints = []
-    if (filters) {
-      for (const filter of filters) {
-        constraints.push(where(filter.field, filter.operator, filter.value))
-      }
-    }
+    const constraints = (filters || []).map((f) =>
+      where(f.field, f.operator, f.value),
+    )
     const q = query(collection(this.db, collectionName), ...constraints)
-    return onSnapshot(q, (snapshot) => {
-      try {
-        const data = snapshot.docs.map(doc => ({
-          id: doc.id,
-          ...convertTimestamps(doc.data()),
+    return onSnapshot(
+      q,
+      (snap) => {
+        const data = snap.docs.map((d) => ({
+          id: d.id,
+          ...convertTimestamps(d.data()),
         }))
         callback({ data, error: null })
-      } catch (error) {
-        console.error(`Error in onQueryChange for ${collectionName}:`, error)
+      },
+      (error) => {
+        console.error(`[Firebase] onQueryChange error (${collectionName}):`, error)
         callback({ data: null, error })
+      },
+    )
+  }
+
+  /** Real-time listener for a single document */
+  onDocumentChange(collectionName, docId, callback) {
+    const ref = doc(this.db, collectionName, docId)
+    return onSnapshot(ref, (snap) => {
+      if (snap.exists()) {
+        callback({
+          data: { id: snap.id, ...convertTimestamps(snap.data()) },
+          error: null,
+        })
+      } else {
+        callback({ data: null, error: null })
       }
-    }, (error) => {
-      console.error(`Listener error for ${collectionName}:`, error)
-      callback({ data: null, error })
     })
   }
 
-  /**
-   * Remove channel (no-op)
-   */
-  removeChannel() {}
-
-  /**
-   * RPC call - increment score
-   */
+  /** RPC — increment_score */
   async rpc(functionName, { row_id, amount }) {
     if (functionName === 'increment_score') {
       try {
-        const docRef = doc(this.db, 'participants', row_id)
-        await updateDoc(docRef, {
-          score: increment(amount),
-        })
+        const ref = doc(this.db, 'participants', row_id)
+        await updateDoc(ref, { score: increment(amount) })
         return { data: { id: row_id }, error: null }
       } catch (error) {
         return { data: null, error }
@@ -144,250 +135,293 @@ export class FirebaseDatabase {
   }
 }
 
-/**
- * Query Builder — supports select, insert, update, delete, eq, order, etc.
- */
+// ─── Broadcast Channel (replaces Supabase Realtime Broadcast) ─────
+class FirebaseBroadcastChannel {
+  constructor(db, channelName) {
+    this.db = db
+    this.channelName = channelName
+    this.handlers = {}
+    this._unsubscribe = null
+  }
+
+  /** Register handler: channel.on('broadcast', { event: 'xyz' }, handler) */
+  on(type, opts, callback) {
+    if (type === 'broadcast' && opts?.event) {
+      this.handlers[opts.event] = callback
+    }
+    if (type === 'postgres_changes') {
+      this.handlers['__db_change'] = callback
+    }
+    return this
+  }
+
+  /** Start listening via Firestore onSnapshot */
+  subscribe(statusCallback) {
+    const ref = doc(this.db, 'broadcasts', this.channelName)
+
+    this._unsubscribe = onSnapshot(
+      ref,
+      (snap) => {
+        if (!snap.exists()) return
+        const data = snap.data()
+        if (!data || !data.eventType) return
+
+        const handler = this.handlers[data.eventType]
+        if (handler) {
+          handler({ payload: data.payload || {} })
+        }
+
+        const dbHandler = this.handlers['__db_change']
+        if (dbHandler) dbHandler()
+      },
+      (err) => {
+        console.error(`[BroadcastChannel] Error on ${this.channelName}:`, err)
+      },
+    )
+
+    if (statusCallback) {
+      setTimeout(() => statusCallback('SUBSCRIBED'), 0)
+    }
+    return this
+  }
+
+  /** Send a broadcast — writes to Firestore "broadcasts/{channelName}" doc */
+  async send({ type, event: eventType, payload }) {
+    try {
+      const ref = doc(this.db, 'broadcasts', this.channelName)
+      await setDoc(ref, {
+        eventType,
+        payload: payload || {},
+        timestamp: new Date(),
+        _nonce: Math.random(), // forces onSnapshot to fire even for same eventType
+      })
+      return 'ok'
+    } catch (err) {
+      console.error(`[BroadcastChannel] Send failed:`, err)
+      return 'error'
+    }
+  }
+
+  unsubscribe() {
+    if (this._unsubscribe) {
+      this._unsubscribe()
+      this._unsubscribe = null
+    }
+  }
+}
+
+// ─── Query Builder ───────────────────────────────────────────
 class FirebaseQueryBuilder {
   constructor(db, collectionName) {
     this.db = db
     this.collectionName = collectionName
     this.filters = []
-    this.orderByFields = []
-    this.limitCount = null
-    this.singleResult = false
-    this.insertData = null
-    this.isInsertOperation = false
+    this._orderByFields = []
+    this._limitCount = null
+    this._singleResult = false
+    this._insertData = null
+    this._isInsert = false
+    this._isUpdate = false
+    this._updateData = null
+    this._isDelete = false
   }
 
-  /**
-   * Select columns (Firebase returns all fields, ignored)
-   */
-  select(fields) {
+  select(_fields) {
     return this
   }
 
-  /**
-   * Equality filter - supports multiple filters
-   */
   eq(field, value) {
-    this.filters.push({ field, operator: '==', value })
+    this.filters.push({ field, op: '==', value })
     return this
   }
 
-  /**
-   * Order by field
-   */
   order(field, options = {}) {
-    const direction = options.ascending === false ? 'desc' : 'asc'
-    this.orderByFields.push({ field, direction })
+    const dir = options.ascending === false ? 'desc' : 'asc'
+    this._orderByFields.push({ field, dir })
     return this
   }
 
-  /**
-   * Limit results
-   */
   limit(count) {
-    this.limitCount = count
+    this._limitCount = count
     return this
   }
 
-  /**
-   * Insert documents
-   */
   insert(data) {
-    this.insertData = data
-    this.isInsertOperation = true
+    this._insertData = data
+    this._isInsert = true
     return this
   }
 
-  /**
-   * Select after insert - allows chaining
-   */
-  select() {
+  update(data) {
+    this._updateData = data
+    this._isUpdate = true
     return this
   }
 
-  /**
-   * Expect single result - returns Promise
-   */
-  async single() {
-    if (this.isInsertOperation) {
-      return this.executeInsert(true)
-    }
-    this.singleResult = true
-    return this.exec()
+  delete() {
+    this._isDelete = true
+    return this
   }
 
-  /**
-   * Maybe single - returns null if not found instead of error
-   */
-  async maybeSingle() {
-    const result = await this.single()
-    if (result.error?.message === 'No results found') {
-      return { data: null, error: null }
-    }
-    return result
+  single() {
+    this._singleResult = true
+    return this._execute()
   }
 
-  /**
-   * Execute insert
-   */
-  async executeInsert(returnSingle = false) {
+  maybeSingle() {
+    this._singleResult = true
+    return this._execute().then((result) => {
+      if (result.error?.message === 'No results found') {
+        return { data: null, error: null }
+      }
+      return result
+    })
+  }
+
+  /** Thenable — makes the query builder awaitable */
+  then(resolve, reject) {
+    return this._execute().then(resolve, reject)
+  }
+
+  // ─── Execution ──────────────────────────────────────────
+  async _execute() {
     try {
-      const isArray = Array.isArray(this.insertData)
-      const docsToInsert = isArray ? this.insertData : [this.insertData]
-      
+      if (this._isInsert) return this._doInsert()
+      if (this._isUpdate) return this._doUpdate()
+      if (this._isDelete) return this._doDelete()
+      return this._doSelect()
+    } catch (error) {
+      console.error(`[Firebase] _execute error on '${this.collectionName}':`, error)
+      return { data: null, error }
+    }
+  }
+
+  async _doSelect() {
+    try {
+      // Build query with ONLY where() — NO orderBy (avoids composite index requirement)
+      const constraints = this.filters.map((f) => where(f.field, f.op, f.value))
+      const q = query(collection(this.db, this.collectionName), ...constraints)
+      const snap = await getDocs(q)
+
+      let data = snap.docs.map((d) => ({
+        id: d.id,
+        ...convertTimestamps(d.data()),
+      }))
+
+      // Sort in JavaScript instead of Firestore (avoids composite index issues)
+      for (const o of this._orderByFields) {
+        data = sortBy(data, o.field, o.dir)
+      }
+
+      // Limit in JavaScript
+      if (this._limitCount) {
+        data = data.slice(0, this._limitCount)
+      }
+
+      if (this._singleResult) {
+        return data.length === 0
+          ? { data: null, error: { message: 'No results found' } }
+          : { data: data[0], error: null }
+      }
+
+      return { data, error: null }
+    } catch (error) {
+      console.error(`[Firebase] SELECT on '${this.collectionName}' failed:`, error)
+      return { data: null, error }
+    }
+  }
+
+  async _doInsert() {
+    try {
+      const isArray = Array.isArray(this._insertData)
+      const docs = isArray ? this._insertData : [this._insertData]
       const collRef = collection(this.db, this.collectionName)
       const results = []
 
-      for (const docData of docsToInsert) {
-        const docRef = await addDoc(collRef, {
+      for (const docData of docs) {
+        const ref = await addDoc(collRef, {
           ...docData,
           created_at: new Date(),
           updated_at: new Date(),
         })
-        results.push({
-          ...docData,
-          id: docRef.id,
-        })
+        results.push({ ...docData, id: ref.id })
       }
 
-      if (returnSingle) {
+      if (this._singleResult) {
         return { data: results[0] || null, error: null }
       }
       return { data: isArray ? results : results[0], error: null }
     } catch (error) {
+      console.error(`[Firebase] INSERT into '${this.collectionName}' failed:`, error)
       return { data: null, error }
     }
   }
 
-  /**
-   * Update documents
-   */
-  async update(updateData) {
+  async _doUpdate() {
     try {
-      const id = this.filters.find(f => f.field === 'id')?.value
-      if (!id) throw new Error('Update requires id filter')
+      const idFilter = this.filters.find((f) => f.field === 'id')
 
-      const docRef = doc(this.db, this.collectionName, id)
-      await updateDoc(docRef, {
-        ...updateData,
-        updated_at: new Date(),
+      if (idFilter) {
+        const ref = doc(this.db, this.collectionName, idFilter.value)
+        await updateDoc(ref, { ...this._updateData, updated_at: new Date() })
+        const snap = await getDoc(ref)
+        return {
+          data: { id: snap.id, ...convertTimestamps(snap.data()) },
+          error: null,
+        }
+      }
+
+      // Update multiple docs matching filters
+      const constraints = this.filters.map((f) => where(f.field, f.op, f.value))
+      const q = query(collection(this.db, this.collectionName), ...constraints)
+      const snap = await getDocs(q)
+      const batch = writeBatch(this.db)
+      snap.docs.forEach((d) => {
+        batch.update(d.ref, { ...this._updateData, updated_at: new Date() })
       })
-
-      const updatedDoc = await getDoc(docRef)
-      return { data: { id: updatedDoc.id, ...convertTimestamps(updatedDoc.data()) }, error: null }
+      await batch.commit()
+      return { data: { count: snap.docs.length }, error: null }
     } catch (error) {
+      console.error(`[Firebase] UPDATE on '${this.collectionName}' failed:`, error)
       return { data: null, error }
     }
   }
 
-  /**
-   * Delete documents
-   */
-  async delete() {
+  async _doDelete() {
     try {
-      // Check if deleting by ID (direct doc deletion)
-      const idFilter = this.filters.find(f => f.field === 'id')
+      const idFilter = this.filters.find((f) => f.field === 'id')
+
       if (idFilter) {
         await deleteDoc(doc(this.db, this.collectionName, idFilter.value))
         return { data: { id: idFilter.value }, error: null }
       }
 
-      // Delete with query filters (multiple documents)
       if (this.filters.length === 0) {
         throw new Error('Delete requires at least one filter')
       }
 
-      const q = query(
-        collection(this.db, this.collectionName),
-        ...this.buildQueryConstraints()
-      )
+      const constraints = this.filters.map((f) => where(f.field, f.op, f.value))
+      const q = query(collection(this.db, this.collectionName), ...constraints)
+      const snap = await getDocs(q)
 
-      const snapshot = await getDocs(q)
-      const batch = writeBatch(this.db)
-
-      snapshot.docs.forEach(doc => {
-        batch.delete(doc.ref)
-      })
-
-      await batch.commit()
-      return { data: { count: snapshot.docs.length }, error: null }
-    } catch (error) {
-      return { data: null, error }
-    }
-  }
-
-  /**
-   * Execute query
-   */
-  async exec() {
-    try {
-      let q = query(
-        collection(this.db, this.collectionName),
-        ...this.buildQueryConstraints()
-      )
-
-      const snapshot = await getDocs(q)
-      let data = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...convertTimestamps(doc.data()),
-      }))
-
-      if (this.singleResult) {
-        if (data.length === 0) {
-          return { data: null, error: { message: 'No results found' } }
-        }
-        return { data: data[0], error: null }
+      if (snap.docs.length === 0) {
+        return { data: { count: 0 }, error: null }
       }
 
-      return { data, error: null }
+      const batch = writeBatch(this.db)
+      snap.docs.forEach((d) => batch.delete(d.ref))
+      await batch.commit()
+      return { data: { count: snap.docs.length }, error: null }
     } catch (error) {
+      console.error(`[Firebase] DELETE on '${this.collectionName}' failed:`, error)
       return { data: null, error }
     }
-  }
-
-  /**
-   * Build Firestore query constraints
-   */
-  buildQueryConstraints() {
-    const constraints = []
-
-    // Add where clauses
-    for (const filter of this.filters) {
-      constraints.push(where(filter.field, filter.operator, filter.value))
-    }
-
-    // Add order by
-    for (const ord of this.orderByFields) {
-      constraints.push(orderBy(ord.field, ord.direction))
-    }
-
-    // Add limit
-    if (this.limitCount) {
-      constraints.push(limit(this.limitCount))
-    }
-
-    return constraints
-  }
-
-  /**
-   * Make awaitable
-   */
-  then(resolve, reject) {
-    if (this.isInsertOperation) {
-      return this.executeInsert().then(resolve, reject)
-    }
-    return this.exec().then(resolve, reject)
   }
 }
 
-// Export singleton instance
+// ─── Exports ─────────────────────────────────────────────────
 export const firebase = new FirebaseDatabase()
-
-// Export for direct DB access
 export function getDatabase() {
   return firebase
 }
-
 export const isSupabaseConfigured = Boolean(firebaseConfig.projectId)
