@@ -142,8 +142,8 @@ class FirebaseBroadcastChannel {
     this.channelName = channelName
     this.handlers = {}
     this._unsubscribe = null
-    this._subscribeTime = null   // timestamp when subscribe() was called
     this._initialSnapshotSkipped = false
+    this._lastProcessedNonce = null  // nonce-based dedup to prevent processing same event twice
   }
 
   /** Register handler: channel.on('broadcast', { event: 'xyz' }, handler) */
@@ -160,22 +160,33 @@ class FirebaseBroadcastChannel {
   /** Start listening via Firestore onSnapshot */
   subscribe(statusCallback) {
     const ref = doc(this.db, 'broadcasts', this.channelName)
-    this._subscribeTime = Date.now()
     this._initialSnapshotSkipped = false
+    this._lastProcessedNonce = null
 
     this._unsubscribe = onSnapshot(
       ref,
       (snap) => {
-        // CRITICAL: Skip the first snapshot (it replays the last written doc).
-        // Only react to changes that happen AFTER we subscribed.
-        if (!this._initialSnapshotSkipped) {
+        if (!snap.exists()) {
+          // Doc doesn't exist yet — mark initial as skipped so next real write is processed
           this._initialSnapshotSkipped = true
           return
         }
 
-        if (!snap.exists()) return
         const data = snap.data()
         if (!data || !data.eventType) return
+
+        // Skip the initial snapshot (replays the last doc state from before we subscribed).
+        // Store its nonce so we never re-process this exact event even if onSnapshot fires again.
+        if (!this._initialSnapshotSkipped) {
+          this._initialSnapshotSkipped = true
+          this._lastProcessedNonce = data._nonce ?? null
+          return
+        }
+
+        // Nonce-based deduplication: each broadcast has a unique _nonce (Math.random()).
+        // Skip if we already processed this exact nonce (prevents cache/server double-fire).
+        if (data._nonce != null && data._nonce === this._lastProcessedNonce) return
+        this._lastProcessedNonce = data._nonce
 
         const handler = this.handlers[data.eventType]
         if (handler) {

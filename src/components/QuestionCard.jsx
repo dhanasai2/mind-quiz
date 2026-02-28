@@ -29,23 +29,25 @@ export default function QuestionCard({
 
   const getOptionStyle = (idx) => {
     const color = optionColors[idx]
+    const correctIdx = Number(question.correct_answer)
     if (!answerSubmitted) {
       return selectedAnswer === idx
         ? `bg-gradient-to-r ${color.active} ring-2 ring-white/10 shadow-lg`
         : `bg-gradient-to-r ${color.base} hover:shadow-md hover:border-white/20`
     }
-    if (idx === question.correct_answer) {
+    if (idx === correctIdx) {
       return 'bg-gradient-to-r from-emerald-500/25 to-emerald-600/15 border-emerald-400/70 shadow-lg shadow-emerald-500/10'
     }
-    if (idx === selectedAnswer && idx !== question.correct_answer) {
+    if (idx === selectedAnswer && idx !== correctIdx) {
       return 'bg-gradient-to-r from-red-500/25 to-red-600/15 border-red-400/70 shadow-lg shadow-red-500/10'
     }
     return 'opacity-40 grayscale'
   }
 
   const getBadgeStyle = (idx) => {
-    if (answerSubmitted && idx === question.correct_answer) return 'bg-emerald-500 text-white'
-    if (answerSubmitted && idx === selectedAnswer && idx !== question.correct_answer) return 'bg-red-500 text-white'
+    const correctIdx = Number(question.correct_answer)
+    if (answerSubmitted && idx === correctIdx) return 'bg-emerald-500 text-white'
+    if (answerSubmitted && idx === selectedAnswer && idx !== correctIdx) return 'bg-red-500 text-white'
     if (selectedAnswer === idx) return `${optionColors[idx].badge} text-white`
     return 'bg-dark-300/80 text-gray-400'
   }
@@ -124,7 +126,7 @@ export default function QuestionCard({
               ${getOptionStyle(idx)} ${!answerSubmitted ? 'cursor-pointer active:scale-[0.98]' : 'cursor-default'}`}
           >
             {/* Answer icon on submit */}
-            {answerSubmitted && idx === question.correct_answer && (
+            {answerSubmitted && idx === Number(question.correct_answer) && (
               <motion.div
                 initial={{ scale: 0 }}
                 animate={{ scale: 1 }}
@@ -133,7 +135,7 @@ export default function QuestionCard({
                 <HiOutlineCheckCircle className="text-white text-base" />
               </motion.div>
             )}
-            {answerSubmitted && idx === selectedAnswer && idx !== question.correct_answer && (
+            {answerSubmitted && idx === selectedAnswer && idx !== Number(question.correct_answer) && (
               <motion.div
                 initial={{ scale: 0 }}
                 animate={{ scale: 1 }}

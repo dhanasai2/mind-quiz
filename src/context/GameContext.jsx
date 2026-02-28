@@ -45,6 +45,11 @@ function gameReducer(state, action) {
       return { ...state, questions: action.payload }
     case 'SHOW_QUESTION': {
       const idx = action.payload
+      // Guard: if we already answered this exact question, don't reset state.
+      // Prevents broadcast replay from wiping out a submitted answer.
+      if (idx === state.currentQuestionIndex && state.answerSubmitted) {
+        return state
+      }
       return {
         ...state,
         currentQuestionIndex: idx,
@@ -135,6 +140,12 @@ export function GameProvider({ children }) {
   }, [state.timeLeft, state.status, state.answerSubmitted])
 
   const joinEvent = useCallback(async (eventCode, playerId, playerName) => {
+    // Reset ALL state from any previous game (prevents leaderboard/score bleed)
+    if (channelRef.current) {
+      supabase.removeChannel(channelRef.current)
+      channelRef.current = null
+    }
+    dispatch({ type: 'RESET' })
     dispatch({ type: 'SET_LOADING', payload: true })
     try {
       // Find event by code
@@ -251,6 +262,9 @@ export function GameProvider({ children }) {
     // Read from ref to always get current state (prevents stale closure bugs)
     const s = stateRef.current
     if (s.answerSubmitted || !s.currentQuestion) return
+
+    // Prevent duplicate answer for the same question (broadcast replay could re-trigger)
+    if (s.myAnswers.some(a => a.questionId === s.currentQuestion.id)) return
 
     const responseTime = Date.now() - s.questionStartTime
     // Type-safe comparison: force both sides to integer to prevent string/number mismatch
