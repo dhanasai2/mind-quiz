@@ -142,6 +142,8 @@ class FirebaseBroadcastChannel {
     this.channelName = channelName
     this.handlers = {}
     this._unsubscribe = null
+    this._subscribeTime = null   // timestamp when subscribe() was called
+    this._initialSnapshotSkipped = false
   }
 
   /** Register handler: channel.on('broadcast', { event: 'xyz' }, handler) */
@@ -158,10 +160,19 @@ class FirebaseBroadcastChannel {
   /** Start listening via Firestore onSnapshot */
   subscribe(statusCallback) {
     const ref = doc(this.db, 'broadcasts', this.channelName)
+    this._subscribeTime = Date.now()
+    this._initialSnapshotSkipped = false
 
     this._unsubscribe = onSnapshot(
       ref,
       (snap) => {
+        // CRITICAL: Skip the first snapshot (it replays the last written doc).
+        // Only react to changes that happen AFTER we subscribed.
+        if (!this._initialSnapshotSkipped) {
+          this._initialSnapshotSkipped = true
+          return
+        }
+
         if (!snap.exists()) return
         const data = snap.data()
         if (!data || !data.eventType) return
