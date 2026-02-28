@@ -45,15 +45,19 @@ function gameReducer(state, action) {
       return { ...state, questions: action.payload }
     case 'SHOW_QUESTION': {
       const idx = action.payload
-      // Guard: if we already answered this exact question, don't reset state.
-      // Prevents broadcast replay from wiping out a submitted answer.
-      if (idx === state.currentQuestionIndex && state.answerSubmitted) {
+      // Guard 1: never re-show a question we already answered
+      const targetQ = state.questions[idx]
+      if (targetQ && state.myAnswers.some(a => a.questionId === targetQ.id)) {
+        return state
+      }
+      // Guard 2: if we're already on this question (active or answered), don't reset
+      if (idx === state.currentQuestionIndex) {
         return state
       }
       return {
         ...state,
         currentQuestionIndex: idx,
-        currentQuestion: state.questions[idx] || null,
+        currentQuestion: targetQ || null,
         selectedAnswer: null,
         answerSubmitted: false,
         questionStartTime: Date.now(),
@@ -204,7 +208,13 @@ export function GameProvider({ children }) {
         .order('order_index')
 
       dispatch({ type: 'SET_QUESTIONS', payload: questions || [] })
-      dispatch({ type: 'SET_STATUS', payload: event.status === 'active' ? 'active' : 'waiting' })
+
+      // If the event is already in progress, jump directly to the current question
+      if (event.status === 'active' && event.current_question_index != null && event.current_question_index >= 0) {
+        dispatch({ type: 'SHOW_QUESTION', payload: event.current_question_index })
+      } else {
+        dispatch({ type: 'SET_STATUS', payload: 'waiting' })
+      }
 
       // Subscribe to realtime
       subscribeToEvent(event.id)
