@@ -205,14 +205,21 @@ export function GameProvider({ children }) {
       const participant = newPart
       dispatch({ type: 'SET_PARTICIPANT', payload: participant })
 
-      // Fetch questions
-      const { data: questions } = await supabase
-        .from('questions')
-        .select('*')
-        .eq('event_id', event.id)
-        .order('order_index')
+      // Fetch questions + participants in parallel
+      const [{ data: questions }, { data: participants }] = await Promise.all([
+        supabase.from('questions').select('*').eq('event_id', event.id).order('order_index'),
+        supabase.from('participants').select('*').eq('event_id', event.id).order('score', { ascending: false }),
+      ])
 
       dispatch({ type: 'SET_QUESTIONS', payload: questions || [] })
+
+      // Set initial leaderboard immediately (real-time listener will keep it updated)
+      if (participants && participants.length > 0) {
+        const sorted = participants
+          .map(p => ({ ...p, score: Number(p.score) || 0 }))
+          .sort((a, b) => b.score - a.score)
+        dispatch({ type: 'SET_LEADERBOARD', payload: sorted })
+      }
 
       // If the event is already in progress, jump directly to the current question
       if (event.status === 'active' && event.current_question_index != null && event.current_question_index >= 0) {
@@ -272,10 +279,8 @@ export function GameProvider({ children }) {
       dispatch({ type: 'SET_REVIEW' })
     })
 
-    // Listen for leaderboard updates
-    channel.on('broadcast', { event: 'leaderboard_update' }, ({ payload }) => {
-      dispatch({ type: 'SET_LEADERBOARD', payload: payload.leaderboard })
-    })
+    // Leaderboard is handled by the real-time participants listener above.
+    // No broadcast handler needed — it would conflict with live data.
 
     // Listen for next-question countdown
     channel.on('broadcast', { event: 'next_question_countdown' }, ({ payload }) => {
