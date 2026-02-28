@@ -106,6 +106,7 @@ export function GameProvider({ children }) {
   const timerRef = useRef(null)
   const countdownTimerRef = useRef(null)
   const channelRef = useRef(null)
+  const participantsListenerRef = useRef(null) // real-time listener for leaderboard
 
   // Refs to always have current state for callbacks (prevents stale closures)
   const stateRef = useRef(state)
@@ -148,6 +149,10 @@ export function GameProvider({ children }) {
     if (channelRef.current) {
       supabase.removeChannel(channelRef.current)
       channelRef.current = null
+    }
+    if (participantsListenerRef.current) {
+      participantsListenerRef.current()
+      participantsListenerRef.current = null
     }
     dispatch({ type: 'RESET' })
     dispatch({ type: 'SET_LOADING', payload: true })
@@ -216,7 +221,7 @@ export function GameProvider({ children }) {
         dispatch({ type: 'SET_STATUS', payload: 'waiting' })
       }
 
-      // Subscribe to realtime
+      // Subscribe to realtime (broadcast channel + live participants for leaderboard)
       subscribeToEvent(event.id)
       dispatch({ type: 'SET_LOADING', payload: false })
       return { event, participant }
@@ -230,7 +235,25 @@ export function GameProvider({ children }) {
     if (channelRef.current) {
       supabase.removeChannel(channelRef.current)
     }
+    if (participantsListenerRef.current) {
+      participantsListenerRef.current()
+    }
 
+    // ── Live leaderboard: real-time listener on participants ──
+    participantsListenerRef.current = supabase.onQueryChange(
+      'participants',
+      [{ field: 'event_id', operator: '==', value: eventId }],
+      ({ data }) => {
+        if (data) {
+          const sorted = data
+            .map(p => ({ ...p, score: Number(p.score) || 0 }))
+            .sort((a, b) => b.score - a.score)
+          dispatch({ type: 'SET_LEADERBOARD', payload: sorted })
+        }
+      },
+    )
+
+    // ── Broadcast channel for admin commands ──
     const channel = supabase.channel(`event-${eventId}`)
 
     // Listen for event status changes
@@ -338,6 +361,10 @@ export function GameProvider({ children }) {
   const cleanup = useCallback(() => {
     if (channelRef.current) {
       supabase.removeChannel(channelRef.current)
+    }
+    if (participantsListenerRef.current) {
+      participantsListenerRef.current()
+      participantsListenerRef.current = null
     }
     if (timerRef.current) clearInterval(timerRef.current)
     if (countdownTimerRef.current) clearInterval(countdownTimerRef.current)
